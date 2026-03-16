@@ -4,7 +4,7 @@ const app = express();
 app.use(express.json({ limit: '15mb' })); // large enough for photo b64
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const FREE_LIMIT_PER_DAY = parseInt(process.env.FREE_LIMIT_PER_DAY || '5', 10);
+const FREE_LIMIT_PER_DAY = parseInt(process.env.FREE_LIMIT_PER_DAY || '10', 10);
 
 // ── In-memory rate limiter ────────────────────────────────────────────────────
 // Resets on server restart (Railway free tier: sleeps after ~30 min idle).
