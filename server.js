@@ -60,7 +60,14 @@ No text, no watermarks, no background elements, no shadows."
 Rules:
 - Replace [SUBJECT] with a 3–6 word English subject description only
 - Do NOT add anything else before or after the template
-- Output ONLY the completed template text, nothing else`;
+- Output ONLY the completed template text, nothing else
+- IMPORTANT: Never use trademarked or copyrighted character names. \
+Replace them with generic equivalents: \
+Spider-Man → web-crawling spider hero, Batman → dark cape bat hero, \
+Iron Man → red metal armor hero, Superman → flying caped hero, \
+Mickey Mouse → cheerful round-eared mouse, Elsa → ice magic princess, \
+Minecraft Steve → blocky pixel character, Pokemon → cute pocket monster. \
+Apply this rule to ANY trademarked character from games, movies, or comics.`;
 
 // ── GET /health ───────────────────────────────────────────────────────────────
 
@@ -86,7 +93,12 @@ app.post('/generate-template', async (req, res) => {
     }
 
     const input = (req.body.input || '').trim();
-    if (!input) return res.status(400).json({ error: 'Missing input' });
+    if (!input) {
+        // refund the count we just incremented
+        const entry = rateLimits.get(deviceId);
+        if (entry) entry.count--;
+        return res.status(400).json({ error: 'Missing input' });
+    }
 
     try {
         // Step 1: GPT-4o fills the style template (guarantees consistent visual style)
@@ -117,7 +129,23 @@ app.post('/generate-template', async (req, res) => {
 
     } catch (err) {
         console.error('/generate-template error:', err.message);
-        res.status(500).json({ error: err.message });
+
+        // Refund rate limit on any generation failure — child shouldn't lose a slot for a blocked/failed request
+        const entry = rateLimits.get(deviceId);
+        if (entry) entry.count--;
+
+        // Return a kid-friendly message for moderation/content blocks
+        const msg = err.message || '';
+        const isModeration = msg.toLowerCase().includes('safety') ||
+                             msg.toLowerCase().includes('content') ||
+                             msg.toLowerCase().includes('policy') ||
+                             msg.toLowerCase().includes('moderat');
+        if (isModeration) {
+            return res.status(422).json({
+                error: 'Такой рисунок не получается создать 🙈 Попробуй что-нибудь другое — кот, дракон, ракета!'
+            });
+        }
+        res.status(500).json({ error: 'Что-то пошло не так 😅 Попробуй ещё раз!' });
     }
 });
 
