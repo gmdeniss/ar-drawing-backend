@@ -411,9 +411,41 @@ app.post('/animate', async (req, res) => {
 // Кисточка looks at the drawing and says what she sees.
 // Headers: X-Device-ID: <uuid>, X-App-Secret: <secret> (when APP_SECRET is set)
 // Body:    { "image": "<base64 jpeg or png>", "subject": "Акула", "kind": "catalog|ai|blank", "mode": "little|artist|master" }
-// Returns: { "phrase": "Ого, это солнышко над травкой! ☀️" }
+// Returns: { "phrase": "Ого, это солнышко над травкой! ☀️", "audio": "<base64 mp3 in Кисточка's voice>" }
 
 const GUESS_PER_DEVICE = parseInt(process.env.GUESS_PER_DEVICE || '40', 10);
+
+// Кисточка's own voice (ElevenLabs «Flicker», the voice of her recorded phrases). Without a key the
+// app reads the guess with the system voice.
+const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
+const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || 'piI8Kku0DcvcL6TTSeQt';
+const ELEVENLABS_MODEL = process.env.ELEVENLABS_MODEL || 'eleven_v3';
+
+/// MP3 of the phrase in Кисточка's voice, or null if it didn't work out.
+async function speakAsKistochka(phrase) {
+    if (!ELEVENLABS_API_KEY) return null;
+    // Emoji would be read out or break the intonation.
+    const text = phrase.replace(/[\p{Extended_Pictographic}\u{FE0F}\u{200D}]/gu, '').replace(/\s+/g, ' ').trim();
+    if (!text) return null;
+    const v3 = ELEVENLABS_MODEL === 'eleven_v3';
+    try {
+        const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}?output_format=mp3_44100_128`, {
+            method: 'POST',
+            headers: { 'xi-api-key': ELEVENLABS_API_KEY, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                text: v3 ? `[cheerfully] ${text}` : text,
+                model_id: ELEVENLABS_MODEL,
+                // Same settings as her recorded phrases; v3 takes stability 0, 0.5 or 1 only.
+                voice_settings: { stability: 0.5, similarity_boost: 0.8, style: 0.35, speed: 1.05 }
+            })
+        });
+        if (!res.ok) throw new Error(`ElevenLabs HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+        return Buffer.from(await res.arrayBuffer()).toString('base64');
+    } catch (err) {
+        console.warn('/guess voice skipped:', err.message);
+        return null;
+    }
+}
 const guessCounts = new Map(); // deviceId → { count, date }
 
 const GUESS_PROMPT = `You are Кисточка, a cheerful puppy who lives in a children's drawing app and loves the kids' pictures.
@@ -483,7 +515,8 @@ app.post('/guess', async (req, res) => {
         });
         const phrase = String(JSON.parse(result.choices[0].message.content).phrase || '').trim().slice(0, 200);
         if (!phrase) throw new Error('empty phrase');
-        res.json({ phrase });
+        const audio = await speakAsKistochka(phrase);
+        res.json(audio ? { phrase, audio } : { phrase });
     } catch (err) {
         console.error('/guess error:', err.message);
         entry.count--;
@@ -498,4 +531,5 @@ app.listen(PORT, () => {
     console.log(`AR Drawing backend running on port ${PORT}`);
     if (!OPENAI_API_KEY) console.warn('WARNING: OPENAI_API_KEY is not set!');
     if (!FAL_KEY) console.warn('WARNING: FAL_KEY is not set — /animate is off');
+    if (!ELEVENLABS_API_KEY) console.warn('WARNING: ELEVENLABS_API_KEY is not set — guesses come without Кисточка\'s voice');
 });
