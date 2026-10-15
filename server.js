@@ -6,6 +6,16 @@ app.use(express.json({ limit: '15mb' })); // large enough for photo b64
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 // The GPT-4 line leaves the API on 2027-01-14; gpt-6-luna is OpenAI's recommended replacement.
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-6-luna';
+// gpt-image-1.5 shuts down on 2026-12-01; both 2.5 models keep transparent backgrounds.
+const IMAGE_MODEL = process.env.IMAGE_MODEL || 'gpt-image-1.5';
+const IMAGE_QUALITY = process.env.IMAGE_QUALITY || 'medium';
+// Models a comparison request may pick (only with the app secret, see /generate-template).
+const IMAGE_MODELS = ['gpt-image-1.5', 'gpt-image-2.5-flare', 'gpt-image-2.5-sunburst'];
+const APP_SECRET = process.env.APP_SECRET;  // shared with the app
+
+function hasAppSecret(req) {
+    return Boolean(APP_SECRET) && req.headers['x-app-secret'] === APP_SECRET;
+}
 const FREE_LIMIT_PER_DAY = parseInt(process.env.FREE_LIMIT_PER_DAY || '10', 10);
 
 // ── In-memory rate limiter ────────────────────────────────────────────────────
@@ -115,16 +125,22 @@ app.post('/generate-template', async (req, res) => {
         });
         const prompt = chatResult.choices[0].message.content.trim();
 
-        // Step 2: gpt-image-1.5 renders transparent PNG coloring outline
+        // Step 2: the image model renders a transparent PNG coloring outline.
+        // With the app secret a request may pick another model or quality, to compare them.
+        const trusted = hasAppSecret(req);
+        const model = trusted && IMAGE_MODELS.includes(req.body.imageModel) ? req.body.imageModel : IMAGE_MODEL;
+        const quality = trusted && ['low', 'medium', 'high'].includes(req.body.quality) ? req.body.quality : IMAGE_QUALITY;
+        const started = Date.now();
         const imageResult = await callOpenAI('images/generations', {
-            model:         'gpt-image-1.5',
+            model,
             prompt,
             size:          '1024x1024',
-            quality:       'medium',
+            quality,
             background:    'transparent',
             output_format: 'png',
             moderation:    'auto'
         });
+        console.log(`/generate-template ${model} ${quality} in ${Date.now() - started} ms`);
 
         const b64_json = imageResult.data[0].b64_json;
         res.json({ b64_json, remaining });
@@ -201,7 +217,6 @@ app.post('/describe-photo', async (req, res) => {
 // the last frame, so the clip loops back to the picture.
 
 const FAL_KEY = process.env.FAL_KEY;
-const APP_SECRET = process.env.APP_SECRET;  // shared with the app; checked only when set
 const ANIMATE_MODEL = process.env.ANIMATE_MODEL || 'minimax/h3-max-turbo/image-to-video';
 const ANIMATE_RESOLUTION = process.env.ANIMATE_RESOLUTION || '768P';
 const ANIMATE_PER_DEVICE = parseInt(process.env.ANIMATE_PER_DEVICE || '5', 10);
@@ -343,7 +358,7 @@ app.post('/animate', async (req, res) => {
     if (!deviceId || !/^[0-9a-f-]{36}$/i.test(deviceId)) {
         return res.status(400).json({ error: 'Missing or invalid X-Device-ID header' });
     }
-    if (APP_SECRET && req.headers['x-app-secret'] !== APP_SECRET) {
+    if (APP_SECRET && !hasAppSecret(req)) {
         return res.status(401).json({ error: 'Unauthorized' });
     }
     if (!FAL_KEY) {
@@ -382,6 +397,90 @@ app.post('/animate', async (req, res) => {
             return res.status(422).json({ error: 'Этот рисунок у меня не получилось оживить 🙈 Попробуй другой!' });
         }
         res.status(502).json({ error: 'Что-то пошло не так 😅 Попробуй ещё раз!' });
+    }
+});
+
+// ── POST /guess ───────────────────────────────────────────────────────────────
+// Кисточка looks at the drawing and says what she sees.
+// Headers: X-Device-ID: <uuid>, X-App-Secret: <secret> (when APP_SECRET is set)
+// Body:    { "image": "<base64 jpeg or png>", "subject": "Акула", "kind": "catalog|ai|blank", "mode": "little|artist|master" }
+// Returns: { "phrase": "Ого, это солнышко над травкой! ☀️" }
+
+const GUESS_PER_DEVICE = parseInt(process.env.GUESS_PER_DEVICE || '40', 10);
+const guessCounts = new Map(); // deviceId → { count, date }
+
+const GUESS_PROMPT = `You are Кисточка, a cheerful puppy who lives in a children's drawing app and loves the kids' pictures.
+A child aged 6–11 shows you a drawing made on a tablet, sometimes on top of a black-outline coloring page.
+
+Say what you see, in Russian, as Кисточка talking to the child:
+- one or two short sentences, at most 120 characters, warm and playful, one emoji at most;
+- if the drawing has no template, guess what it shows, naming things and colors you really see; if it's unclear, make a happy guess and ask, e.g. "Это ракета? Или волшебная рыбка? 🤔";
+- if a template name is given, don't guess the subject: praise something specific about how it's colored;
+- never criticize, never mention mistakes, nothing scary; don't name brands or famous characters;
+- for "little" mode use very simple words; for "master" mode speak like to an older kid, a bit less cute.
+
+Reply with JSON only: {"phrase": "..."}`;
+
+const GUESS_SCHEMA = {
+    name: 'guess',
+    strict: true,
+    schema: {
+        type: 'object',
+        properties: { phrase: { type: 'string' } },
+        required: ['phrase'],
+        additionalProperties: false
+    }
+};
+
+app.post('/guess', async (req, res) => {
+    const deviceId = req.headers['x-device-id'];
+    if (!deviceId || !/^[0-9a-f-]{36}$/i.test(deviceId)) {
+        return res.status(400).json({ error: 'Missing or invalid X-Device-ID header' });
+    }
+    if (APP_SECRET && !hasAppSecret(req)) {
+        return res.status(401).json({ error: 'Unauthorized' });
+    }
+    const image = String(req.body.image || '').trim();
+    if (!image || image.length > 8000000 || !/^[A-Za-z0-9+/=]+$/.test(image.slice(0, 200))) {
+        return res.status(400).json({ error: 'Missing image' });
+    }
+
+    const today = new Date().toDateString();
+    let entry = guessCounts.get(deviceId);
+    if (!entry || entry.date !== today) {
+        entry = { count: 0, date: today };
+        guessCounts.set(deviceId, entry);
+    }
+    if (entry.count >= GUESS_PER_DEVICE) {
+        return res.status(429).json({ error: 'Я сегодня уже много угадывала, глазки устали 😴 Давай завтра!' });
+    }
+    entry.count++;
+
+    const mime = image.startsWith('iVBOR') ? 'image/png' : 'image/jpeg';
+    const subject = String(req.body.subject || '').trim().slice(0, 80);
+    const mode = ['little', 'artist', 'master'].includes(req.body.mode) ? req.body.mode : 'artist';
+    const hint = `${subject ? `Template name: ${subject}` : 'No template: drawn on a blank sheet or over an AI picture.'} Mode: ${mode}.`;
+    try {
+        const result = await callOpenAI('chat/completions', {
+            model: OPENAI_MODEL,
+            reasoning_effort: 'none',
+            max_completion_tokens: 200,
+            response_format: { type: 'json_schema', json_schema: GUESS_SCHEMA },
+            messages: [
+                { role: 'system', content: GUESS_PROMPT },
+                { role: 'user', content: [
+                    { type: 'image_url', image_url: { url: `data:${mime};base64,${image}`, detail: 'low' } },
+                    { type: 'text', text: hint }
+                ] }
+            ]
+        });
+        const phrase = String(JSON.parse(result.choices[0].message.content).phrase || '').trim().slice(0, 200);
+        if (!phrase) throw new Error('empty phrase');
+        res.json({ phrase });
+    } catch (err) {
+        console.error('/guess error:', err.message);
+        entry.count--;
+        res.status(502).json({ error: 'Ой, я задумалась и не разглядела 🙈 Покажи ещё раз!' });
     }
 });
 
