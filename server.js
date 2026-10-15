@@ -87,7 +87,7 @@ Apply this rule to ANY trademarked character from games, movies, or comics.`;
 app.get('/health', (_req, res) => res.json({ ok: true, animate: Boolean(FAL_KEY) }));
 
 // ── POST /generate-template ───────────────────────────────────────────────────
-// Headers: X-Device-ID: <uuid>
+// Headers: X-Device-ID: <uuid>, X-App-Secret: <secret> (when APP_SECRET is set)
 // Body:    { "input": "кот" }
 // Returns: { "b64_json": "...", "remaining": 4 }
 
@@ -95,6 +95,9 @@ app.post('/generate-template', async (req, res) => {
     const deviceId = req.headers['x-device-id'];
     if (!deviceId || !/^[0-9a-f-]{36}$/i.test(deviceId)) {
         return res.status(400).json({ error: 'Missing or invalid X-Device-ID header' });
+    }
+    if (APP_SECRET && !hasAppSecret(req)) {
+        return res.status(401).json({ error: 'Unauthorized' });
     }
 
     const { allowed, remaining } = checkRateLimit(deviceId);
@@ -169,7 +172,7 @@ app.post('/generate-template', async (req, res) => {
 });
 
 // ── POST /describe-photo ──────────────────────────────────────────────────────
-// Headers: X-Device-ID: <uuid>
+// Headers: X-Device-ID: <uuid>, X-App-Secret: <secret> (when APP_SECRET is set)
 // Body:    { "b64jpeg": "..." }
 // Returns: { "subject": "sitting orange cat" }
 // Note: Photo description does NOT count against the rate limit.
@@ -179,6 +182,9 @@ app.post('/describe-photo', async (req, res) => {
     const deviceId = req.headers['x-device-id'];
     if (!deviceId || !/^[0-9a-f-]{36}$/i.test(deviceId)) {
         return res.status(400).json({ error: 'Missing or invalid X-Device-ID header' });
+    }
+    if (APP_SECRET && !hasAppSecret(req)) {
+        return res.status(401).json({ error: 'Unauthorized' });
     }
 
     const b64jpeg = (req.body.b64jpeg || '').trim();
