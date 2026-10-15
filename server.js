@@ -7,10 +7,11 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 // The GPT-4 line leaves the API on 2027-01-14; gpt-6-luna is OpenAI's recommended replacement.
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-6-luna';
 // gpt-image-1.5 shuts down on 2026-12-01; both 2.5 models keep transparent backgrounds.
-const IMAGE_MODEL = process.env.IMAGE_MODEL || 'gpt-image-1.5';
+// Flare won the 2026-10-15 comparison: ~1.5× faster than sunburst, bolder lines with big areas to color.
+const IMAGE_MODEL = process.env.IMAGE_MODEL || 'gpt-image-2.5-flare';
 const IMAGE_QUALITY = process.env.IMAGE_QUALITY || 'medium';
 // Models a comparison request may pick (only with the app secret, see /generate-template).
-const IMAGE_MODELS = ['gpt-image-1.5', 'gpt-image-2.5-flare', 'gpt-image-2.5-sunburst'];
+const IMAGE_MODELS = ['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst'];
 const APP_SECRET = process.env.APP_SECRET;  // shared with the app
 
 function hasAppSecret(req) {
